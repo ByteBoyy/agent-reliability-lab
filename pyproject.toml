@@ -11,7 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 api = ["fastapi>=0.115", "uvicorn>=0.30"]
-test = ["pytest>=8.0"]
+test = ["pytest>=8.0", "httpx>=0.27"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -20,3 +20,5 @@ testpaths = ["tests"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/reliability_lab"]
 
+[project.scripts]
+reliability-lab = "reliability_lab.api:run"

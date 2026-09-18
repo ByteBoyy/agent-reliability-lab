@@ -37,10 +37,20 @@ python -m venv .venv
 .venv/bin/pytest
 ```
 
+Install the API extra and start the local service with:
+
+```bash
+.venv/bin/pip install -e '.[api]'
+reliability-lab
+```
+
+The API exposes health, execution, and approval endpoints. Repeating an
+execution with the same idempotency key returns the stored result with
+`replayed` set to `true`.
+
 ## Next slices
 
 - Persist run state transitions and resumable checkpoints.
 - Expose runs and approvals through FastAPI.
 - Add deterministic failure fixtures and JSON evaluation reports.
 - Add PostgreSQL and a small trace viewer after the local contract is stable.
-
