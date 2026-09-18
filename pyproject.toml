@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-reliability-lab"
+version = "0.1.0"
+description = "Offline-first reliability harness for tool-using agents"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+api = ["fastapi>=0.115", "uvicorn>=0.30"]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reliability_lab"]
+
