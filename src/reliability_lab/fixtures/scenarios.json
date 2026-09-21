@@ -1,0 +1,15 @@
+[
+  {
+    "name": "idempotent_replay",
+    "replay": true
+  },
+  {
+    "name": "transient_recovery",
+    "max_attempts": 3,
+    "transient_failures": 2
+  },
+  {
+    "name": "guarded_side_effect",
+    "requires_approval": true
+  }
+]
