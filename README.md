@@ -37,10 +37,18 @@ python -m venv .venv
 .venv/bin/pytest
 ```
 
+Run the bundled deterministic reliability scenarios without network access:
+
+```bash
+python -m reliability_lab.harness --output scorecard.json
+```
+
+The command exercises retry recovery, approval blocking, and replay safety. It
+returns a nonzero exit status if any scenario is incomplete or violates an
+invariant, so the JSON scorecard can also serve as a CI evaluation gate.
+
 ## Next slices
 
 - Persist run state transitions and resumable checkpoints.
 - Expose runs and approvals through FastAPI.
-- Add deterministic failure fixtures and JSON evaluation reports.
 - Add PostgreSQL and a small trace viewer after the local contract is stable.
-
