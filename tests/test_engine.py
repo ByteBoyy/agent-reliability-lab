@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+from threading import Barrier, Event, Lock
 
 import pytest
 
@@ -63,6 +63,23 @@ def test_concurrent_replays_execute_side_effect_once() -> None:
     assert first_result.replayed is False
     assert second_result.replayed is True
     assert first_result.output == second_result.output
+
+
+def test_different_idempotency_keys_can_execute_concurrently() -> None:
+    executor = ReliableExecutor(RunStore())
+    both_tools_started = Barrier(2)
+
+    def tool(arguments: dict) -> dict:
+        both_tools_started.wait(timeout=1)
+        return {"charged": arguments["amount"]}
+
+    other_call = ToolCall("run-2", "charge", {"amount": 30}, "run-2:charge:30")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(executor.execute, call(), tool)
+        second = pool.submit(executor.execute, other_call, tool)
+
+        assert first.result(timeout=2).output == {"charged": 25}
+        assert second.result(timeout=2).output == {"charged": 30}
 
 
 def test_blocks_sensitive_call_until_approved() -> None:
