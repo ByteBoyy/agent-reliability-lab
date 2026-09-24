@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from contextlib import contextmanager
 from threading import Lock
@@ -14,6 +15,10 @@ class ApprovalRequired(RuntimeError):
 
 
 class RetryExhausted(RuntimeError):
+    pass
+
+
+class IdempotencyConflict(RuntimeError):
     pass
 
 
@@ -48,10 +53,17 @@ class ReliableExecutor:
                     self._key_locks[key] = (current_lock, users - 1)
 
     def execute(self, call: ToolCall, tool: Tool) -> ToolResult:
+        identity = json.dumps(
+            [call.run_id, call.name, call.arguments, call.requires_approval],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         with self._serialize_key(call.idempotency_key):
             cached = self.store.result_for(call.idempotency_key)
             if cached:
-                output, attempts = cached
+                output, attempts, original_identity = cached
+                if original_identity != identity:
+                    raise IdempotencyConflict(call.idempotency_key)
                 return ToolResult(call.idempotency_key, output, attempts, replayed=True)
 
             if call.requires_approval and not self.store.is_approved(call.idempotency_key):
@@ -66,7 +78,7 @@ class ReliableExecutor:
                             f"{call.name} failed after {attempt} attempts"
                         ) from exc
                 else:
-                    self.store.save_result(call.idempotency_key, output, attempt)
+                    self.store.save_result(call.idempotency_key, output, attempt, identity)
                     return ToolResult(call.idempotency_key, output, attempt)
 
             raise AssertionError("retry loop exited unexpectedly")
