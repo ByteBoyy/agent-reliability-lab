@@ -2,23 +2,30 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from threading import RLock
 from pathlib import Path
 from typing import Any
 
 
 class RunStore:
     def __init__(self, path: str | Path = ":memory:") -> None:
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        self._lock = RLock()
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tool_results (
                 idempotency_key TEXT PRIMARY KEY,
                 output TEXT NOT NULL,
-                attempts INTEGER NOT NULL
+                attempts INTEGER NOT NULL,
+                call_identity TEXT
             )
             """
         )
+        if "call_identity" not in {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(tool_results)")
+        }:
+            self.connection.execute("ALTER TABLE tool_results ADD COLUMN call_identity TEXT")
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS approvals (
@@ -28,28 +35,36 @@ class RunStore:
             """
         )
 
-    def result_for(self, key: str) -> tuple[dict[str, Any], int] | None:
-        row = self.connection.execute(
-            "SELECT output, attempts FROM tool_results WHERE idempotency_key = ?", (key,)
-        ).fetchone()
-        return (json.loads(row["output"]), row["attempts"]) if row else None
+    def result_for(self, key: str) -> tuple[dict[str, Any], int, str | None] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT output, attempts, call_identity "
+                "FROM tool_results WHERE idempotency_key = ?",
+                (key,),
+            ).fetchone()
+        return (json.loads(row["output"]), row["attempts"], row["call_identity"]) if row else None
 
-    def save_result(self, key: str, output: dict[str, Any], attempts: int) -> None:
-        with self.connection:
-            self.connection.execute(
-                "INSERT INTO tool_results VALUES (?, ?, ?)",
-                (key, json.dumps(output, sort_keys=True), attempts),
-            )
+    def save_result(
+        self, key: str, output: dict[str, Any], attempts: int, call_identity: str
+    ) -> None:
+        with self._lock:
+            with self.connection:
+                self.connection.execute(
+                    "INSERT INTO tool_results "
+                    "(idempotency_key, output, attempts, call_identity) VALUES (?, ?, ?, ?)",
+                    (key, json.dumps(output, sort_keys=True), attempts, call_identity),
+                )
 
     def approve(self, key: str) -> None:
-        with self.connection:
-            self.connection.execute(
-                "INSERT OR REPLACE INTO approvals VALUES (?, 1)", (key,)
-            )
+        with self._lock:
+            with self.connection:
+                self.connection.execute(
+                    "INSERT OR REPLACE INTO approvals VALUES (?, 1)", (key,)
+                )
 
     def is_approved(self, key: str) -> bool:
-        row = self.connection.execute(
-            "SELECT approved FROM approvals WHERE idempotency_key = ?", (key,)
-        ).fetchone()
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT approved FROM approvals WHERE idempotency_key = ?", (key,)
+            ).fetchone()
         return bool(row and row["approved"])
-

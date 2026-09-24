@@ -1,6 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event, Lock
+
 import pytest
 
-from reliability_lab.engine import ApprovalRequired, ReliableExecutor, RetryExhausted
+from reliability_lab.engine import (
+    ApprovalRequired,
+    IdempotencyConflict,
+    ReliableExecutor,
+    RetryExhausted,
+)
 from reliability_lab.models import ToolCall
 from reliability_lab.store import RunStore
 
@@ -24,6 +32,99 @@ def test_replays_saved_result_without_repeating_side_effect() -> None:
     assert first.replayed is False
     assert second.replayed is True
     assert invocations == 1
+
+
+def test_reused_key_with_changed_call_is_rejected_after_restart(tmp_path) -> None:
+    database = tmp_path / "runs.db"
+    store = RunStore(database)
+    ReliableExecutor(store).execute(
+        call(), lambda arguments: {"charged": arguments["amount"]}
+    )
+    store.connection.close()
+
+    restarted = RunStore(database)
+    invoked = False
+
+    def tool(_: dict) -> dict:
+        nonlocal invoked
+        invoked = True
+        return {"charged": 99}
+
+    changed = ToolCall("run-1", "charge", {"amount": 99}, call().idempotency_key)
+    with pytest.raises(IdempotencyConflict):
+        ReliableExecutor(restarted).execute(changed, tool)
+    assert not invoked
+
+
+def test_legacy_result_without_call_identity_fails_closed(tmp_path) -> None:
+    import sqlite3
+
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE tool_results (idempotency_key TEXT PRIMARY KEY, "
+            "output TEXT NOT NULL, attempts INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO tool_results VALUES (?, ?, ?)",
+            (call().idempotency_key, '{"charged": 25}', 1),
+        )
+
+    with pytest.raises(IdempotencyConflict):
+        ReliableExecutor(RunStore(database)).execute(call(), lambda _: {"charged": 25})
+
+
+def test_concurrent_replays_execute_side_effect_once() -> None:
+    executor = ReliableExecutor(RunStore())
+    first_invocation = Event()
+    release_tool = Event()
+    duplicate_invocation = Event()
+    invocation_guard = Lock()
+    invocations = 0
+
+    def tool(arguments: dict) -> dict:
+        nonlocal invocations
+        with invocation_guard:
+            invocations += 1
+            if invocations == 1:
+                first_invocation.set()
+            else:
+                duplicate_invocation.set()
+        if not release_tool.wait(timeout=2):
+            raise TimeoutError("test did not release the tool")
+        return {"charged": arguments["amount"]}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(executor.execute, call(), tool)
+        assert first_invocation.wait(timeout=1)
+        second = pool.submit(executor.execute, call(), tool)
+
+        assert not duplicate_invocation.wait(timeout=0.05)
+        release_tool.set()
+        first_result = first.result(timeout=1)
+        second_result = second.result(timeout=1)
+
+    assert invocations == 1
+    assert first_result.replayed is False
+    assert second_result.replayed is True
+    assert first_result.output == second_result.output
+
+
+def test_different_idempotency_keys_can_execute_concurrently() -> None:
+    executor = ReliableExecutor(RunStore())
+    both_tools_started = Barrier(2)
+
+    def tool(arguments: dict) -> dict:
+        both_tools_started.wait(timeout=1)
+        return {"charged": arguments["amount"]}
+
+    other_call = ToolCall("run-2", "charge", {"amount": 30}, "run-2:charge:30")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(executor.execute, call(), tool)
+        second = pool.submit(executor.execute, other_call, tool)
+
+        assert first.result(timeout=2).output == {"charged": 25}
+        assert second.result(timeout=2).output == {"charged": 30}
 
 
 def test_blocks_sensitive_call_until_approved() -> None:
