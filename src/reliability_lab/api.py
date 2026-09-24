@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .engine import ApprovalRequired, ReliableExecutor
+from .engine import ApprovalRequired, IdempotencyConflict, ReliableExecutor
 from .models import ToolCall
 from .store import RunStore
 
@@ -40,6 +40,10 @@ def create_app(store: RunStore | None = None) -> FastAPI:
             result = executor.execute(call, lambda arguments: {"echo": arguments})
         except ApprovalRequired as exc:
             raise HTTPException(status_code=409, detail={"approval_required": str(exc)}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(
+                status_code=409, detail={"idempotency_conflict": str(exc)}
+            ) from exc
         return {
             "output": result.output,
             "attempts": result.attempts,
@@ -60,4 +64,3 @@ def run() -> None:
     import uvicorn
 
     uvicorn.run("reliability_lab.api:app", host="127.0.0.1", port=8000)
-

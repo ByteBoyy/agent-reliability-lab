@@ -3,7 +3,12 @@ from threading import Barrier, Event, Lock
 
 import pytest
 
-from reliability_lab.engine import ApprovalRequired, ReliableExecutor, RetryExhausted
+from reliability_lab.engine import (
+    ApprovalRequired,
+    IdempotencyConflict,
+    ReliableExecutor,
+    RetryExhausted,
+)
 from reliability_lab.models import ToolCall
 from reliability_lab.store import RunStore
 
@@ -27,6 +32,46 @@ def test_replays_saved_result_without_repeating_side_effect() -> None:
     assert first.replayed is False
     assert second.replayed is True
     assert invocations == 1
+
+
+def test_reused_key_with_changed_call_is_rejected_after_restart(tmp_path) -> None:
+    database = tmp_path / "runs.db"
+    store = RunStore(database)
+    ReliableExecutor(store).execute(
+        call(), lambda arguments: {"charged": arguments["amount"]}
+    )
+    store.connection.close()
+
+    restarted = RunStore(database)
+    invoked = False
+
+    def tool(_: dict) -> dict:
+        nonlocal invoked
+        invoked = True
+        return {"charged": 99}
+
+    changed = ToolCall("run-1", "charge", {"amount": 99}, call().idempotency_key)
+    with pytest.raises(IdempotencyConflict):
+        ReliableExecutor(restarted).execute(changed, tool)
+    assert not invoked
+
+
+def test_legacy_result_without_call_identity_fails_closed(tmp_path) -> None:
+    import sqlite3
+
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE tool_results (idempotency_key TEXT PRIMARY KEY, "
+            "output TEXT NOT NULL, attempts INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO tool_results VALUES (?, ?, ?)",
+            (call().idempotency_key, '{"charged": 25}', 1),
+        )
+
+    with pytest.raises(IdempotencyConflict):
+        ReliableExecutor(RunStore(database)).execute(call(), lambda _: {"charged": 25})
 
 
 def test_concurrent_replays_execute_side_effect_once() -> None:
