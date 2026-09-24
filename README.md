@@ -47,6 +47,9 @@ reliability-lab
 The API exposes health, execution, and approval endpoints. Repeating an
 execution with the same idempotency key returns the stored result with
 `replayed` set to `true`.
+Reusing a key with a different run, tool, arguments, or approval requirement
+returns HTTP 409. Existing SQLite rows created before call identity was stored
+also return a conflict because their original request cannot be verified.
 
 ## Next slices
 
